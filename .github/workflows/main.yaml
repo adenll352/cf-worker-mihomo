@@ -62,7 +62,7 @@ jobs:
               if: steps.check_submodules.outputs.has_updates == 'true' && github.event_name != 'push'
               run: |
                   pnpm version patch --no-git-tag-version
-                  pnpm i
+                  pnpm i --no-frozen-lockfile
                   pnpm build
                   TAG="v$(node -p "require('./package.json').version")"
                   git config --local user.name "github-actions[bot]"
