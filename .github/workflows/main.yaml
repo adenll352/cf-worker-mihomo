@@ -1,142 +1,197 @@
 name: SubCloud
 
 on:
-    push:
-        tags:
-            - 'v*'
-    schedule:
-        - cron: '0 16 * * *'
-    workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+  schedule:
+    - cron: '0 16 * * *'
+  workflow_dispatch:
 
 permissions:
-    contents: write
+  contents: write
 
 jobs:
-    build:
-        runs-on: ubuntu-latest
+  build:
+    runs-on: ubuntu-latest
 
-        steps:
-            - name: Checkout
-              uses: actions/checkout@v7
-              with:
-                  ref: 'main'
-                  submodules: recursive
-                  fetch-depth: '0'
-                  fetch-tags: 'true'
-                  persist-credentials: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: 'main'
+          submodules: recursive
+          fetch-depth: '0'
+          fetch-tags: 'true'
+          persist-credentials: true
 
-            - name: Install pnpm
-              uses: pnpm/action-setup@v6
-              with:
-                  version: 10
-                  cache: true
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10
+          cache: true
 
-            - name: Set up Node.js
-              uses: actions/setup-node@v6
-              with:
-                  node-version: '24'
-                  cache: 'pnpm'
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: 'pnpm'
 
-            - name: Check and update submodules
-              id: check_submodules
-              run: |
-                  git submodule status --recursive > submodules_before.txt
+      - name: Check and update submodules
+        id: check_submodules
+        run: |
+          set -euo pipefail
 
-                  git submodule update --remote --recursive
+          # collect submodule paths from .gitmodules
+          mapfile -t SUBMODULES < <(git config --file .gitmodules --get-regexp path 2>/dev/null | awk '{print $2}')
 
-                  git submodule status --recursive > submodules_after.txt
+          # snapshot before state
+          git submodule status --recursive > submodules_before.txt || true
 
-                  if ! diff submodules_before.txt submodules_after.txt > /dev/null; then
-                    echo "Submodules have been updated"
-                    echo "has_updates=true" >> $GITHUB_OUTPUT
+          # for each submodule, detect whether upstream has main or master and set config.branch accordingly
+          for sm in "${SUBMODULES[@]}"; do
+            URL=$(git config --file .gitmodules --get submodule."$sm".url || true)
+            echo "Processing submodule: $sm (url: $URL)"
+            if [ -n "$URL" ]; then
+              if git ls-remote --heads "$URL" refs/heads/main >/dev/null 2>&1; then
+                echo "Found main on $URL; setting branch=main for $sm"
+                git config submodule."$sm".branch main
+              elif git ls-remote --heads "$URL" refs/heads/master >/dev/null 2>&1; then
+                echo "Found master on $URL; setting branch=master for $sm"
+                git config submodule."$sm".branch master
+              else
+                echo "No main/master found on $URL; leaving branch unset for $sm"
+              fi
+            else
+              echo "No URL for submodule $sm in .gitmodules"
+            fi
+          done
 
-                    echo "Submodule changes:"
-                    diff submodules_before.txt submodules_after.txt || true
-                  else
-                    echo "No submodule updates"
-                    echo "has_updates=false" >> $GITHUB_OUTPUT
-                  fi
-                  rm -f submodules_before.txt submodules_after.txt
+          # attempt remote update; if it fails, try reinitializing submodules and update again
+          if ! git submodule update --remote --recursive; then
+            echo "git submodule update --remote failed; attempting reinit fallback"
+            git submodule deinit -f --all || true
+            # remove nested .git/modules entries to force a clean init
+            rm -rf .git/modules || true
+            git submodule update --init --recursive
+            git submodule update --remote --recursive
+          fi
 
-            - name: Commit and push submodule updates
-              if: steps.check_submodules.outputs.has_updates == 'true'
-              run: |
-                  git config --local user.name "github-actions[bot]"
-                  git config --local user.email "github-actions[bot]@users.noreply.github.com"
-                  git add src/core/Sub-Store
-                  # show new submodule SHA for logs
-                  git ls-files --stage src/core/Sub-Store || true
-                  git commit -m "chore: update Sub-Store submodule to upstream" || echo "No changes to commit"
-                  git remote set-url origin "https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
-                  git push origin HEAD:main
+          # snapshot after state and compare
+          git submodule status --recursive > submodules_after.txt || true
 
-            - name: Update package version if submodules changed
-              id: update
-              if: steps.check_submodules.outputs.has_updates == 'true' && github.event_name != 'push'
-              run: |
-                  pnpm version patch --no-git-tag-version
-                  pnpm install --no-frozen-lockfile
-                  pnpm build
-                  TAG="v$(node -p "require('./package.json').version")"
-                  git config --local user.name "github-actions[bot]"
-                  git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          if ! diff submodules_before.txt submodules_after.txt > /dev/null; then
+            echo "Submodules have been updated"
+            echo "has_updates=true" >> "$GITHUB_OUTPUT"
+            echo "Submodule changes:"
+            diff submodules_before.txt submodules_after.txt || true
+          else
+            echo "No submodule updates"
+            echo "has_updates=false" >> "$GITHUB_OUTPUT"
+          fi
 
-                  git add package.json pnpm-lock.yaml
-                  git add src/core/Sub-Store
-                  git add src/server.js
-                  git commit -m "chore: 同步 Sub-store 至 V$(node -p "require('./src/core/Sub-Store/backend/package.json').version")"
+          rm -f submodules_before.txt submodules_after.txt
 
-                  git push origin main
+      - name: Commit and push submodule updates
+        if: steps.check_submodules.outputs.has_updates == 'true'
+        run: |
+          set -euo pipefail
 
-                  git tag "$TAG"
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
 
-                  echo "pushed=true" >> "$GITHUB_OUTPUT"
+          # add all submodule path changes
+          # (explicitly add paths from .gitmodules so we don't accidentally add unrelated files)
+          mapfile -t SUBMODULES < <(git config --file .gitmodules --get-regexp path 2>/dev/null | awk '{print $2}')
+          for sm in "${SUBMODULES[@]}"; do
+            git add "$sm" || true
+          done
 
-            - name: Install dependencies
-              if: steps.update.outputs.pushed != 'true'
-              run: |
-                  pnpm install --no-frozen-lockfile
+          # show staged submodule entries for debugging
+          echo "Staged submodule entries:"
+          git ls-files --stage "${SUBMODULES[@]}" || true
 
-            - name: Bundle
-              if: steps.update.outputs.pushed != 'true'
-              run: |
-                  pnpm build
+          # commit if there are staged changes
+          if git diff --staged --quiet; then
+            echo "No staged changes to commit"
+          else
+            git commit -m "chore: update submodule(s) to upstream"
+            # ensure we push using token auth to avoid credential issues
+            BRANCH=$(git rev-parse --abbrev-ref HEAD || echo main)
+            git remote set-url origin "https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
+            git push origin "HEAD:${BRANCH}"
+          fi
 
-            - name: Generate release tag
-              id: tag
-              run: |
-                  if [ "${{ github.event_name }}" == "push" ]; then
-                    # 从推送的 tag 获取版本号
-                    echo "release_tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-                  else
-                    # 从 package.json 获取版本号
-                    SUBSTORE_RELEASE="v$(node --eval="process.stdout.write(require('./package.json').version)")"
-                    echo "release_tag=$SUBSTORE_RELEASE" >> $GITHUB_OUTPUT
-                  fi
+      - name: Update package version if submodules changed
+        id: update
+        if: steps.check_submodules.outputs.has_updates == 'true' && github.event_name != 'push'
+        run: |
+          set -euo pipefail
 
-            - name: Generate release notes
-              run: |
-                  bash .github/release.sh
+          pnpm version patch --no-git-tag-version
+          pnpm install --no-frozen-lockfile
+          pnpm build
+          TAG="v$(node -p "require('./package.json').version")"
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
 
-            - name: Release
-              if: steps.update.outputs.pushed == 'true' || github.ref_type == 'tag'
-              uses: softprops/action-gh-release@v3
-              with:
-                  token: ${{ secrets.GITHUB_TOKEN  }}
-                  tag_name: ${{ steps.tag.outputs.release_tag }}
-                  body_path: release.md
-                  generate_release_notes: false
-                  files: |
-                      ./dist/_worker.js
+          git add package.json pnpm-lock.yaml
+          git add src/core/Sub-Store
+          git add src/server.js
+          git commit -m "chore: 同步 Sub-store 至 V$(node -p "require('./src/core/Sub-Store/backend/package.json').version")"
 
-            - name: Git push assets to "release" branch
-              run: |
-                  cd dist || exit 1
-                  git init
-                  git config --local user.name "github-actions[bot]"
-                  git config --local user.email "github-actions[bot]@users.noreply.github.com"
-                  git checkout -b release
-                  git add .
-                  git commit -m "release: ${{ steps.tag.outputs.release_tag }}"
-                  git remote add origin "https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
-                  git push -f -u origin release
+          git remote set-url origin "https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
+          git push origin main
+
+          git tag "$TAG"
+
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        if: steps.update.outputs.pushed != 'true'
+        run: |
+          pnpm install --no-frozen-lockfile
+
+      - name: Bundle
+        if: steps.update.outputs.pushed != 'true'
+        run: |
+          pnpm build
+
+      - name: Generate release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            # 从推送的 tag 获取版本号
+            echo "release_tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          else
+            # 从 package.json 获取版本号
+            SUBSTORE_RELEASE="v$(node --eval="process.stdout.write(require('./package.json').version)")"
+            echo "release_tag=$SUBSTORE_RELEASE" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate release notes
+        run: |
+          bash .github/release.sh
+
+      - name: Release
+        if: steps.update.outputs.pushed == 'true' || github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN  }}
+          tag_name: ${{ steps.tag.outputs.release_tag }}
+          body_path: release.md
+          generate_release_notes: false
+          files: |
+            ./dist/_worker.js
+
+      - name: Git push assets to "release" branch
+        run: |
+          cd dist || exit 1
+          git init
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b release
+          git add .
+          git commit -m "release: ${{ steps.tag.outputs.release_tag }}"
+          git remote add origin "https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
+          git push -f -u origin release
