@@ -23,6 +23,7 @@ jobs:
                   submodules: recursive
                   fetch-depth: '0'
                   fetch-tags: 'true'
+                  persist-credentials: true
 
             - name: Install pnpm
               uses: pnpm/action-setup@v6
@@ -56,6 +57,18 @@ jobs:
                     echo "has_updates=false" >> $GITHUB_OUTPUT
                   fi
                   rm -f submodules_before.txt submodules_after.txt
+
+            - name: Commit and push submodule updates
+              if: steps.check_submodules.outputs.has_updates == 'true'
+              run: |
+                  git config --local user.name "github-actions[bot]"
+                  git config --local user.email "github-actions[bot]@users.noreply.github.com"
+                  git add src/core/Sub-Store
+                  # show new submodule SHA for logs
+                  git ls-files --stage src/core/Sub-Store || true
+                  git commit -m "chore: update Sub-Store submodule to upstream" || echo "No changes to commit"
+                  git remote set-url origin "https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
+                  git push origin HEAD:main
 
             - name: Update package version if submodules changed
               id: update
