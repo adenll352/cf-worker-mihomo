@@ -84,10 +84,29 @@ jobs:
               run: |
                   pnpm install --no-frozen-lockfile
 
+            # Temporarily hide backend code that relies on Node builtins when building the Cloudflare Worker bundle.
+            - name: Temporarily hide Sub-Store backend for worker build
+              if: steps.update.outputs.pushed != 'true'
+              run: |
+                  if [ -d src/core/Sub-Store/backend ]; then
+                    mv src/core/Sub-Store/backend src/core/Sub-Store/backend._hidden
+                    echo "BACKEND_HIDDEN=true" >> $GITHUB_ENV
+                  else
+                    echo "BACKEND_HIDDEN=false" >> $GITHUB_ENV
+                  fi
+
             - name: Bundle
               if: steps.update.outputs.pushed != 'true'
               run: |
                   pnpm build
+
+            # Restore backend after build so subsequent steps (release, tests) can access it
+            - name: Restore Sub-Store backend after build
+              if: steps.update.outputs.pushed != 'true'
+              run: |
+                  if [ "${{ env.BACKEND_HIDDEN }}" = "true" ] && [ -d src/core/Sub-Store/backend._hidden ]; then
+                    mv src/core/Sub-Store/backend._hidden src/core/Sub-Store/backend
+                  fi
 
             - name: Generate release tag
               id: tag
@@ -97,7 +116,7 @@ jobs:
                     echo "release_tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
                   else
                     # 从 package.json 获取版本号
-                    SUBSTORE_RELEASE="v$(node --eval="process.stdout.write(require('./package.json').version)")"
+                    SUBSTORE_RELEASE="v$(node --eval="process.stdout.write(require('./package.json').version") )"
                     echo "release_tag=$SUBSTORE_RELEASE" >> $GITHUB_OUTPUT
                   fi
 
