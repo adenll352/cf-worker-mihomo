@@ -64,14 +64,21 @@ jobs:
                   pnpm version patch --no-git-tag-version
                   pnpm install --no-frozen-lockfile
                   pnpm build
-                  TAG="v$(node -p "require('./package.json').version")"
+
+                  # 先取 package.json 版本，避免在双引号内嵌套复杂命令
+                  PKG_VERSION=$(node -p "require('./package.json').version")
+                  TAG="v$PKG_VERSION"
+
                   git config --local user.name "github-actions[bot]"
                   git config --local user.email "github-actions[bot]@users.noreply.github.com"
 
                   git add package.json pnpm-lock.yaml
                   git add src/core/Sub-Store
                   git add src/server.js
-                  git commit -m "chore: 同步 Sub-store 至 V$(node -p "require('./src/core/Sub-Store/backend/package.json').version())"
+
+                  # 获取 Sub-Store 版本，避免在提交信息中直接嵌套命令
+                  SUBSTORE_VERSION=$(node -p "require('./src/core/Sub-Store/backend/package.json').version")
+                  git commit -m "chore: 同步 Sub-store 至 V$SUBSTORE_VERSION"
 
                   git push origin main
 
@@ -96,8 +103,9 @@ jobs:
                     # 从推送的 tag 获取版本号
                     echo "release_tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
                   else
-                    # 从 package.json 获取版本号
-                    SUBSTORE_RELEASE="v$(node --eval="process.stdout.write(require('./package.json').version") )"
+                    # 从 package.json 获取版本号，先赋值再组合，避免引号/括号嵌套
+                    PKG_VERSION=$(node -p "require('./package.json').version")
+                    SUBSTORE_RELEASE="v$PKG_VERSION"
                     echo "release_tag=$SUBSTORE_RELEASE" >> $GITHUB_OUTPUT
                   fi
 
