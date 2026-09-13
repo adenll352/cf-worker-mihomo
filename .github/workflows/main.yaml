@@ -71,7 +71,7 @@ jobs:
                   git add package.json pnpm-lock.yaml
                   git add src/core/Sub-Store
                   git add src/server.js
-                  git commit -m "chore: 同步 Sub-store 至 V$(node -p "require('./src/core/Sub-Store/backend/package.json').version")"
+                  git commit -m "chore: 同步 Sub-store 至 V$(node -p "require('./src/core/Sub-Store/backend/package.json').version())"
 
                   git push origin main
 
@@ -84,29 +84,10 @@ jobs:
               run: |
                   pnpm install --no-frozen-lockfile
 
-            # Temporarily hide backend code that relies on Node builtins when building the Cloudflare Worker bundle.
-            - name: Temporarily hide Sub-Store backend for worker build
-              if: steps.update.outputs.pushed != 'true'
-              run: |
-                  if [ -d src/core/Sub-Store/backend ]; then
-                    mv src/core/Sub-Store/backend src/core/Sub-Store/backend._hidden
-                    echo "BACKEND_HIDDEN=true" >> $GITHUB_ENV
-                  else
-                    echo "BACKEND_HIDDEN=false" >> $GITHUB_ENV
-                  fi
-
             - name: Bundle
               if: steps.update.outputs.pushed != 'true'
               run: |
                   pnpm build
-
-            # Restore backend after build so subsequent steps (release, tests) can access it
-            - name: Restore Sub-Store backend after build
-              if: steps.update.outputs.pushed != 'true'
-              run: |
-                  if [ "${{ env.BACKEND_HIDDEN }}" = "true" ] && [ -d src/core/Sub-Store/backend._hidden ]; then
-                    mv src/core/Sub-Store/backend._hidden src/core/Sub-Store/backend
-                  fi
 
             - name: Generate release tag
               id: tag
